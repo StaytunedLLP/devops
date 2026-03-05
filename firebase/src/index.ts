@@ -9,6 +9,7 @@ import { Directory, object, func, Secret } from "@dagger.io/dagger";
 import { installDeps } from "./install.js";
 import { build } from "./build.js";
 import { deploy } from "./deploy.js";
+import { nodeBase } from "./firebase.js";
 
 type FirebaseWebAppConfig = {
   apiKey?: string;
@@ -90,70 +91,122 @@ export class Firebase {
     // 2. Inject VITE parameters into Web App's .env file
     let configuredSrc = installedSrc;
     if (frontendDir) {
-      const envEntries: Record<string, string> = {
-        VITE_FIREBASE_PROJECT_ID: projectId,
-      };
+      let builder = nodeBase().withWorkdir("/src");
 
+      // Set explicit env variables
+      builder = builder.withEnvVariable("VITE_FIREBASE_PROJECT_ID", projectId);
       if (appId) {
-        envEntries.VITE_FIREBASE_APP_ID = appId;
+        builder = builder.withEnvVariable("VITE_FIREBASE_APP_ID", appId);
+      }
+
+      // Mount existing .env if present
+      const frontendEntries = await configuredSrc.directory(frontendDir).entries();
+      if (frontendEntries.includes(".env")) {
+        builder = builder.withFile(".env", configuredSrc.file(`${frontendDir}/.env`));
+      } else {
+        builder = builder.withNewFile(".env", "");
       }
 
       if (webappConfig) {
-        const configJson = await webappConfig.plaintext();
-        envEntries.VITE_FIREBASE_WEBAPP_CONFIG = configJson;
-        const parsed = lenientParse(configJson) as FirebaseWebAppConfig;
+        builder = builder.withSecretVariable("WEBAPP_CONFIG_SECRET", webappConfig);
+      }
+      if (extraEnv) {
+        builder = builder.withSecretVariable("EXTRA_ENV_SECRET", extraEnv);
+      }
 
-        const mapping: Array<[keyof FirebaseWebAppConfig, string]> = [
-          ["apiKey", "VITE_FIREBASE_API_KEY"],
-          ["authDomain", "VITE_FIREBASE_AUTH_DOMAIN"],
-          ["projectId", "VITE_FIREBASE_PROJECT_ID"],
-          ["storageBucket", "VITE_FIREBASE_STORAGE_BUCKET"],
-          ["messagingSenderId", "VITE_FIREBASE_MESSAGING_SENDER_ID"],
-          ["appId", "VITE_FIREBASE_APP_ID"],
-          ["measurementId", "VITE_FIREBASE_MEASUREMENT_ID"],
-        ];
+      // We run a small node script within the container to safely parse secrets and append them
+      // This prevents the plaintext values from leaking into the Dagger pipeline logs.
+      const script = `
+        const fs = require('fs');
 
-        for (const [configKey, envKey] of mapping) {
-          const value = parsed[configKey];
-          if (typeof value === "string" && value.trim().length > 0) {
-            envEntries[envKey] = value;
+        function formatEnvValue(value) {
+          if (/^[A-Za-z0-9_./:@-]+$/.test(value)) {
+            return value;
+          }
+          return JSON.stringify(value);
+        }
+
+        function lenientParse(input) {
+          const trimmed = input.trim();
+          if (!trimmed) return {};
+
+          try {
+            return JSON.parse(trimmed);
+          } catch {
+            const fixed = trimmed
+              .replace(/([{,]\\s*)([a-zA-Z0-9_]+)\\s*:/g, '$1"$2":')
+              .replace(/'/g, '"')
+              .replace(/,\\s*([}\\]])/g, "$1");
+
+            try {
+              return JSON.parse(fixed);
+            } catch (err) {
+              console.error("Failed to parse webappConfig:", err.message);
+              process.exit(1);
+            }
           }
         }
-      }
 
-      let extraEnvContent = "";
-      if (extraEnv) {
-        extraEnvContent = await extraEnv.plaintext();
-      }
-
-      let existingEnvContent = "";
-      const frontendEntries = await configuredSrc.directory(frontendDir).entries();
-      if (frontendEntries.includes(".env")) {
-        try {
-          existingEnvContent = await configuredSrc
-            .file(`${frontendDir}/.env`)
-            .contents();
-        } catch {
-          existingEnvContent = "";
+        let envContent = fs.readFileSync('.env', 'utf-8');
+        // Ensure it ends with a newline if it has content
+        if (envContent.length > 0 && !envContent.endsWith('\\n')) {
+          envContent += '\\n';
         }
-      }
 
-      const generatedEnvLines = Object.entries(envEntries).map(
-        ([key, value]) => `${key}=${formatEnvValue(value)}`,
-      );
+        const envEntries = {
+          VITE_FIREBASE_PROJECT_ID: process.env.VITE_FIREBASE_PROJECT_ID,
+        };
 
-      const lines = [
-        existingEnvContent.trimEnd(),
-        ...generatedEnvLines,
-        extraEnvContent.trim(),
-      ].filter(Boolean);
+        if (process.env.VITE_FIREBASE_APP_ID) {
+          envEntries.VITE_FIREBASE_APP_ID = process.env.VITE_FIREBASE_APP_ID;
+        }
 
-      const envContent = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+        if (process.env.WEBAPP_CONFIG_SECRET) {
+          envEntries.VITE_FIREBASE_WEBAPP_CONFIG = process.env.WEBAPP_CONFIG_SECRET;
+          const parsed = lenientParse(process.env.WEBAPP_CONFIG_SECRET);
 
-      configuredSrc = configuredSrc.withNewFile(
-        `${frontendDir}/.env`,
-        envContent,
-      );
+          const mapping = [
+            ["apiKey", "VITE_FIREBASE_API_KEY"],
+            ["authDomain", "VITE_FIREBASE_AUTH_DOMAIN"],
+            ["projectId", "VITE_FIREBASE_PROJECT_ID"],
+            ["storageBucket", "VITE_FIREBASE_STORAGE_BUCKET"],
+            ["messagingSenderId", "VITE_FIREBASE_MESSAGING_SENDER_ID"],
+            ["appId", "VITE_FIREBASE_APP_ID"],
+            ["measurementId", "VITE_FIREBASE_MEASUREMENT_ID"],
+          ];
+
+          for (const [configKey, envKey] of mapping) {
+            const value = parsed[configKey];
+            if (typeof value === "string" && value.trim().length > 0) {
+              envEntries[envKey] = value;
+            }
+          }
+        }
+
+        const generatedEnvLines = Object.entries(envEntries).map(
+          ([key, value]) => key + '=' + formatEnvValue(value)
+        );
+
+        const lines = [
+          envContent.trimEnd(),
+          ...generatedEnvLines,
+        ];
+
+        if (process.env.EXTRA_ENV_SECRET) {
+          lines.push(process.env.EXTRA_ENV_SECRET.trim());
+        }
+
+        const finalEnvContent = lines.filter(Boolean).length > 0
+          ? lines.filter(Boolean).join("\\n") + "\\n"
+          : "";
+
+        fs.writeFileSync('.env', finalEnvContent);
+      `;
+
+      builder = builder.withExec(["node", "-e", script]);
+
+      const secureEnvFile = builder.file(".env");
+      configuredSrc = configuredSrc.withFile(`${frontendDir}/.env`, secureEnvFile);
     }
 
     // 3. Build web app and functions
