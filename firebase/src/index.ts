@@ -127,12 +127,15 @@ export class Firebase {
       }
 
       let existingEnvContent = "";
-      try {
-        existingEnvContent = await configuredSrc
-          .file(`${frontendDir}/.env`)
-          .contents();
-      } catch {
-        existingEnvContent = "";
+      const frontendEntries = await configuredSrc.directory(frontendDir).entries();
+      if (frontendEntries.includes(".env")) {
+        try {
+          existingEnvContent = await configuredSrc
+            .file(`${frontendDir}/.env`)
+            .contents();
+        } catch {
+          existingEnvContent = "";
+        }
       }
 
       const generatedEnvLines = Object.entries(envEntries).map(

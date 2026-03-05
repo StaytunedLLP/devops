@@ -26,10 +26,10 @@ export async function installDeps(
   ): Promise<Container> {
     const dirRef = source.directory(dir);
 
+    const entries = await dirRef.entries();
+
     // Check if package.json exists
-    try {
-      await dirRef.file("package.json").id();
-    } catch {
+    if (!entries.includes("package.json")) {
       console.log(`Skipping install in ${dir}: package.json not found.`);
       return base.withDirectory(`/src/${dir}`, dirRef);
     }
@@ -39,12 +39,10 @@ export async function installDeps(
       .withFile("package.json", dirRef.file("package.json"));
 
     // package-lock is required for npm ci, but we can fallback to npm install if missing
-    let hasLock = true;
-    try {
-      await dirRef.file("package-lock.json").id();
+    let hasLock = false;
+    if (entries.includes("package-lock.json")) {
+      hasLock = true;
       ctr = ctr.withFile("package-lock.json", dirRef.file("package-lock.json"));
-    } catch {
-      hasLock = false;
     }
 
     const installCmd = hasLock
