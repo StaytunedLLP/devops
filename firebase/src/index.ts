@@ -9,49 +9,7 @@ import { Directory, object, func, Secret } from "@dagger.io/dagger";
 import { installDeps } from "./install.js";
 import { build } from "./build.js";
 import { deploy } from "./deploy.js";
-
-type FirebaseWebAppConfig = {
-  apiKey?: string;
-  authDomain?: string;
-  projectId?: string;
-  storageBucket?: string;
-  messagingSenderId?: string;
-  appId?: string;
-  measurementId?: string;
-};
-
-function formatEnvValue(value: string): string {
-  if (/^[A-Za-z0-9_./:@-]+$/.test(value)) {
-    return value;
-  }
-  return JSON.stringify(value);
-}
-
-function lenientParse(input: string): any {
-  const trimmed = input.trim();
-  if (!trimmed) return {};
-
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // Attempt to fix common JS literal issues:
-    // 1. Wrap unquoted keys in double quotes
-    // 2. Replace single quotes with double quotes
-    // 3. Remove trailing commas
-    const fixed = trimmed
-      .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":')
-      .replace(/'/g, '"')
-      .replace(/,\s*([}\]])/g, "$1");
-
-    try {
-      return JSON.parse(fixed);
-    } catch (err: any) {
-      throw new Error(
-        `Failed to parse webappConfig. Please ensure it is a valid JSON or JS object literal. ${err.message}`,
-      );
-    }
-  }
-}
+import { nodeBase } from "./firebase.js";
 
 @object()
 export class Firebase {
@@ -90,67 +48,99 @@ export class Firebase {
     // 2. Inject VITE parameters into Web App's .env file
     let configuredSrc = installedSrc;
     if (frontendDir) {
-      const envEntries: Record<string, string> = {
-        VITE_FIREBASE_PROJECT_ID: projectId,
-      };
+      const frontendEntries = await configuredSrc.directory(frontendDir).entries();
+
+      let envBuilder = nodeBase()
+        .withDirectory("/src", configuredSrc)
+        .withWorkdir(`/src/${frontendDir}`)
+        .withEnvVariable("VITE_FIREBASE_PROJECT_ID", projectId);
 
       if (appId) {
-        envEntries.VITE_FIREBASE_APP_ID = appId;
+        envBuilder = envBuilder.withEnvVariable("VITE_FIREBASE_APP_ID", appId);
       }
-
       if (webappConfig) {
-        const configJson = await webappConfig.plaintext();
-        envEntries.VITE_FIREBASE_WEBAPP_CONFIG = configJson;
-        const parsed = lenientParse(configJson) as FirebaseWebAppConfig;
-
-        const mapping: Array<[keyof FirebaseWebAppConfig, string]> = [
-          ["apiKey", "VITE_FIREBASE_API_KEY"],
-          ["authDomain", "VITE_FIREBASE_AUTH_DOMAIN"],
-          ["projectId", "VITE_FIREBASE_PROJECT_ID"],
-          ["storageBucket", "VITE_FIREBASE_STORAGE_BUCKET"],
-          ["messagingSenderId", "VITE_FIREBASE_MESSAGING_SENDER_ID"],
-          ["appId", "VITE_FIREBASE_APP_ID"],
-          ["measurementId", "VITE_FIREBASE_MEASUREMENT_ID"],
-        ];
-
-        for (const [configKey, envKey] of mapping) {
-          const value = parsed[configKey];
-          if (typeof value === "string" && value.trim().length > 0) {
-            envEntries[envKey] = value;
-          }
-        }
+        envBuilder = envBuilder.withSecretVariable(
+          "VITE_FIREBASE_WEBAPP_CONFIG",
+          webappConfig,
+        );
       }
-
-      let extraEnvContent = "";
       if (extraEnv) {
-        extraEnvContent = await extraEnv.plaintext();
+        envBuilder = envBuilder.withSecretVariable("EXTRA_ENV_CONTENT", extraEnv);
+      }
+      if (frontendEntries.includes(".env")) {
+        envBuilder = envBuilder.withEnvVariable("HAS_EXISTING_ENV", "true");
       }
 
-      let existingEnvContent = "";
-      try {
-        existingEnvContent = await configuredSrc
-          .file(`${frontendDir}/.env`)
-          .contents();
-      } catch {
-        existingEnvContent = "";
-      }
+      envBuilder = envBuilder.withExec([
+        "node",
+        "-e",
+        `
+const fs = require("node:fs");
 
-      const generatedEnvLines = Object.entries(envEntries).map(
-        ([key, value]) => `${key}=${formatEnvValue(value)}`,
-      );
+function formatEnvValue(value) {
+  if (/^[A-Za-z0-9_./:@-]+$/.test(value)) {
+    return value;
+  }
+  return JSON.stringify(value);
+}
 
-      const lines = [
-        existingEnvContent.trimEnd(),
-        ...generatedEnvLines,
-        extraEnvContent.trim(),
-      ].filter(Boolean);
+function lenientParse(input) {
+  const trimmed = input.trim();
+  if (!trimmed) return {};
 
-      const envContent = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const fixed = trimmed
+      .replace(/([{,]\\s*)([a-zA-Z0-9_]+)\\s*:/g, '$1"$2":')
+      .replace(/'/g, '"')
+      .replace(/,\\s*([}\\]])/g, "$1");
+    return JSON.parse(fixed);
+  }
+}
 
-      configuredSrc = configuredSrc.withNewFile(
-        `${frontendDir}/.env`,
-        envContent,
-      );
+const envEntries = {
+  VITE_FIREBASE_PROJECT_ID: process.env.VITE_FIREBASE_PROJECT_ID,
+};
+
+if (process.env.VITE_FIREBASE_APP_ID) {
+  envEntries.VITE_FIREBASE_APP_ID = process.env.VITE_FIREBASE_APP_ID;
+}
+
+if (process.env.VITE_FIREBASE_WEBAPP_CONFIG) {
+  envEntries.VITE_FIREBASE_WEBAPP_CONFIG = process.env.VITE_FIREBASE_WEBAPP_CONFIG;
+  const parsed = lenientParse(process.env.VITE_FIREBASE_WEBAPP_CONFIG);
+  const mapping = [
+    ["apiKey", "VITE_FIREBASE_API_KEY"],
+    ["authDomain", "VITE_FIREBASE_AUTH_DOMAIN"],
+    ["projectId", "VITE_FIREBASE_PROJECT_ID"],
+    ["storageBucket", "VITE_FIREBASE_STORAGE_BUCKET"],
+    ["messagingSenderId", "VITE_FIREBASE_MESSAGING_SENDER_ID"],
+    ["appId", "VITE_FIREBASE_APP_ID"],
+    ["measurementId", "VITE_FIREBASE_MEASUREMENT_ID"],
+  ];
+  for (const [configKey, envKey] of mapping) {
+    const value = parsed[configKey];
+    if (typeof value === "string" && value.trim().length > 0) {
+      envEntries[envKey] = value;
+    }
+  }
+}
+
+const existingEnvContent = process.env.HAS_EXISTING_ENV === "true"
+  ? fs.readFileSync(".env", "utf8").trimEnd()
+  : "";
+const generatedEnvLines = Object.entries(envEntries).map(
+  ([key, value]) => \`\${key}=\${formatEnvValue(value)}\`,
+);
+const extraEnvContent = (process.env.EXTRA_ENV_CONTENT ?? "").trim();
+const lines = [existingEnvContent, ...generatedEnvLines, extraEnvContent].filter(Boolean);
+const envContent = lines.length > 0 ? \`\${lines.join("\\n")}\\n\` : "";
+fs.writeFileSync(".env", envContent);
+`,
+      ]);
+
+      configuredSrc = envBuilder.directory("/src");
     }
 
     // 3. Build web app and functions
