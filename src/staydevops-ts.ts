@@ -109,6 +109,7 @@ export class Checks {
    * @example
    * dagger call checks install --source . --playwright-install
    */
+  @check()
   @func()
   async install(
     @argument({
@@ -646,6 +647,7 @@ export class StaydevopsTs {
    * @example
    * dagger call test-playwright --source . --package-paths "apps/web" --run-affected
    */
+  @check()
   @func()
   async testPlaywright(
     @argument({
