@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "id": 1,
+      "prompt": "Run devops-pr-monitor for staystack PR 340",
+      "expected_output": "The agent executes the monitor script for PR 340, parses the results, and reports GHA status.",
+      "assertions": [
+        "The agent calls the monitor-pr.js script with argument '340'.",
+        "The agent parses the generated report status.",
+        "The agent outputs PR check statuses (pass/fail/pending) correctly."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "GHA check affected-tests failed on PR 340. Download the logs and fix the issue.",
+      "expected_output": "The agent detects the failure in affected-tests, downloads and parses the GHA logs, diagnoses the self-referencing package issue, and modifies node-checks.ts to add container symlinks.",
+      "assertions": [
+        "The agent downloads GHA logs for the failed job.",
+        "The agent identifies the 'Cannot find package' error from the log.",
+        "The agent applies symlink creation commands to the build script in node-checks.ts."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Monitor GHA run status for branch verify-affected-tests-fix-1 after pushing the fix.",
+      "expected_output": "The agent monitors the PR checks progress, waiting for pending runs to complete, and confirms once everything is green.",
+      "assertions": [
+        "The agent polls/monitors GHA check state using the monitor script.",
+        "The agent waits or schedules checks until GHA reports completion status.",
+        "The agent verifies that the run completed successfully."
+      ]
+    }
+  ]
+}
