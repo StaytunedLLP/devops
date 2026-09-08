@@ -1,6 +1,6 @@
 {
   "name": "@staytunedllp/daggerverse",
-  "version": "1.12.8",
+  "version": "1.12.9",
   "description": "Shared TypeScript helpers for Staytuned Dagger modules",
   "type": "module",
   "main": "./dist/index.js",
