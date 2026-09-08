@@ -82,3 +82,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: dagger check -m . "${{ steps.pattern.outputs.pattern }}"
 
+  ods:
+    name: ODS Document Integrity Gate
+    uses: open-doc-spec/ods-action/.github/workflows/ods.yml@main
+    with:
+      runs-on: "ubuntu-latest"
+      path: "."
+      doctor: true
+      strict-fmt: true

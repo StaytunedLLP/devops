@@ -1,0 +1,14 @@
+# ODS workspace configuration
+spec = "0.1"
+
+ignore = [
+  "node_modules",
+  "dist",
+  ".turbo",
+  "coverage"
+]
+
+[service]
+mode = "poll"
+poll_secs = 2
+max_rss_mb = 10
